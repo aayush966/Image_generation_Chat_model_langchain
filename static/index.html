@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ImageBot — LangChain × Hugging Face</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎨</text></svg>" />
+  <link rel="stylesheet" href="/css/style.css" />
+</head>
+<body>
+  <div class="layout">
+
+    <!-- ───────────── Sidebar ───────────── -->
+    <aside class="sidebar" id="sidebar">
+      <header class="brand">
+        <span class="brand-mark">🎨</span>
+        <div>
+          <h1>ImageBot</h1>
+          <p>LangChain × Hugging Face</p>
+        </div>
+      </header>
+
+      <div class="status" id="status">
+        <span class="dot" id="statusDot"></span>
+        <span id="statusText">connecting…</span>
+      </div>
+
+      <section class="panel">
+        <label class="field">
+          <span>Image model</span>
+          <select id="model"></select>
+        </label>
+
+        <label class="field">
+          <span>Size</span>
+          <select id="size">
+            <option value="512x512">512 × 512 · square</option>
+            <option value="768x768">768 × 768 · square</option>
+            <option value="1024x1024" selected>1024 × 1024 · square</option>
+            <option value="1024x576">1024 × 576 · landscape</option>
+            <option value="576x1024">576 × 1024 · portrait</option>
+          </select>
+        </label>
+
+        <label class="field">
+          <span>Steps <b id="stepsVal">4</b></span>
+          <input type="range" id="steps" min="1" max="50" value="4" />
+        </label>
+
+        <label class="field">
+          <span>Guidance <b id="guidanceVal">0.0</b></span>
+          <input type="range" id="guidance" min="0" max="15" step="0.5" value="0" />
+        </label>
+
+        <label class="field">
+          <span>Seed</span>
+          <input type="number" id="seed" placeholder="random" />
+        </label>
+
+        <label class="switch">
+          <input type="checkbox" id="forceImage" checked />
+          <span class="track"><span class="thumb"></span></span>
+          <span class="switch-label">
+            Always create an image
+            <small>Draws every message instead of replying in words</small>
+          </span>
+        </label>
+
+        <label class="switch">
+          <input type="checkbox" id="enhance" checked />
+          <span class="track"><span class="thumb"></span></span>
+          <span class="switch-label">
+            Enhance prompt with the LLM
+            <small>Expands short prompts via LangChain</small>
+          </span>
+        </label>
+      </section>
+
+      <section class="panel gallery-panel">
+        <div class="panel-head">
+          <h2>Gallery</h2>
+          <button class="ghost" id="refreshGallery" title="Refresh">⟳</button>
+        </div>
+        <div class="gallery" id="gallery"></div>
+      </section>
+
+      <footer class="sidebar-foot">
+        <button class="ghost wide" id="themeToggle">◐ Theme</button>
+        <button class="ghost wide danger" id="clearChat">🗑 Clear chat</button>
+      </footer>
+    </aside>
+
+    <!-- ───────────── Chat ───────────── -->
+    <main class="chat">
+      <header class="chat-head">
+        <button class="ghost only-mobile" id="menuToggle">☰</button>
+        <div>
+          <h2>Chat</h2>
+          <p id="modelLabel">—</p>
+        </div>
+      </header>
+
+      <div class="messages" id="messages">
+        <div class="welcome" id="welcome">
+          <div class="welcome-mark">🎨</div>
+          <h3>Describe a picture, I'll make it</h3>
+          <p>An open-source diffusion model on Hugging Face, orchestrated with LangChain.</p>
+          <div class="chips">
+            <button class="chip">a red fox sleeping in a snowy forest at dawn</button>
+            <button class="chip">cyberpunk street market in the rain, neon reflections</button>
+            <button class="chip">watercolour lighthouse during a storm</button>
+            <button class="chip">a cosy reading nook with a cat, warm afternoon light</button>
+          </div>
+        </div>
+      </div>
+
+      <form class="composer" id="composer">
+        <textarea id="input" rows="1" placeholder="Describe an image…  (Enter to send, Shift+Enter for a new line)"></textarea>
+        <button type="submit" id="send" title="Send">
+          <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+            <path d="M3 20l18-8L3 4v6l12 2-12 2v6z" fill="currentColor" />
+          </svg>
+        </button>
+      </form>
+    </main>
+  </div>
+
+  <!-- Lightbox -->
+  <div class="lightbox" id="lightbox" hidden>
+    <img id="lightboxImg" alt="" />
+  </div>
+
+  <script src="/js/app.js"></script>
+</body>
+</html>
