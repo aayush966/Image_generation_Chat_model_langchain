@@ -85,6 +85,13 @@ body {
   padding: 8px 11px;
 }
 
+.memory {
+  color: var(--muted);
+  font-size: 12px;
+  margin-top: -4px;
+  padding: 0 11px;
+}
+
 .dot {
   background: var(--muted);
   border-radius: 50%;

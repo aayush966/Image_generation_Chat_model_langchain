@@ -30,26 +30,67 @@ history, so follow-ups like *"same but at night"* work.
 | `server.py` | FastAPI backend + JSON API for the web UI |
 | `static/index.html` · `static/css/style.css` · `static/js/app.js` | The HTML/CSS/JS chat interface (no frameworks, no CDN) |
 | `chain.py` | LangChain router / prompt-enhancer / chat chains + the pipeline |
+| `memory.py` | LangChain session memory (`BaseChatMessageHistory` per session id) |
 | `image_tool.py` | `HuggingFaceImageTool(BaseTool)` — the text-to-image tool |
 | `app.py` | Alternative Streamlit UI (same chains) |
 | `config.py` | env-driven configuration |
+
+## Memory
+
+The bot remembers the conversation with LangChain's own chat-history API rather than
+by trusting whatever transcript the client sends:
+
+```
+respond("same but at night", session_id="abc")
+   │
+   ▼
+RunnableWithMessageHistory
+   │  ├─ before: loads session "abc" into the MessagesPlaceholder("history") slot
+   │  └─ after:  appends this turn's human + AI message back into it
+   ▼
+router / enhancer / chat chains  ← all three see the same history
+```
+
+- `memory.py` keeps one `WindowedChatMessageHistory` (an `InMemoryChatMessageHistory`
+  subclass) per session id, trimmed to the last **16 messages** so prompts stay small.
+- Sessions are held in an LRU capped at 200, so a long-running server cannot grow
+  without bound.
+- For an image turn the assistant's remembered message is `Generated an image of: <prompt>`
+  — storing the *prompt* rather than the file path is what lets *"same but at night"*
+  resolve against the right picture.
+- A turn that raises is never written to memory, so a failed generation leaves no trace.
+- Memory is **per process**: restart the server and it is gone. The browser also keeps
+  the transcript in `localStorage` and sends it with the next message, which re-seeds an
+  empty session — so a restart is invisible to the user.
+
+Each browser gets a `session_id` (a UUID in `localStorage`), so two tabs are two
+independent conversations. The sidebar shows how full the memory window is.
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /api/session/{id}` | what the bot currently remembers |
+| `POST /api/session/reset` | forget a conversation (wired to **Clear chat**) |
+
+In the terminal chat (`python chain.py`) type `forget` to clear the session.
 
 ### Web UI features
 
 Dark/light theme, model picker, size / steps / guidance / seed controls, prompt-enhance
 toggle, streaming-style typing indicator, image cards with **Download / Copy prompt /
-Variation**, click-to-zoom lightbox, a gallery of past generations, chat history kept in
-`localStorage` (so follow-ups such as *"same but at night"* keep their context), and a
-responsive layout with a collapsible sidebar on mobile.
+Variation**, click-to-zoom lightbox, a gallery of past generations, a live memory
+counter, a transcript restored on reload, and a responsive layout with a collapsible
+sidebar on mobile.
 
 ### API
 
 | Endpoint | Purpose |
 |---|---|
-| `POST /api/chat` | one turn — returns `{type:"image", prompt, url, filename, model}` or `{type:"text", text}` |
-| `POST /api/enhance` | preview the LangChain-enhanced prompt without generating |
-| `GET /api/config` | models, backend, token status, per-model defaults |
+| `POST /api/chat` | one turn — takes `session_id`, returns `{type:"image", prompt, url, filename, model, remembered}` or `{type:"text", text, remembered}` |
+| `POST /api/enhance` | preview the LangChain-enhanced prompt without generating (reads memory, does not write to it) |
+| `GET /api/config` | models, backend, token status, per-model defaults, memory window |
 | `GET /api/gallery` | recent generations |
+| `GET /api/session/{id}` | the remembered messages for a session |
+| `POST /api/session/reset` | clear a session's memory |
 | `GET /images/{file}` | serve a generated PNG |
 
 ## Setup

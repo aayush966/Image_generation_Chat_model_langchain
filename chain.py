@@ -7,23 +7,39 @@ Flow for every user turn:
 
 All three chains run on an open-source instruct model served by the Hugging Face
 Inference API through `langchain_huggingface`.
+
+Conversation memory is LangChain's own: the pipeline is wrapped in
+`RunnableWithMessageHistory`, which loads the session's past messages into the
+`MessagesPlaceholder("history")` slot before the chains run and appends this
+turn afterwards. Callers pass a `session_id` instead of a transcript.
 """
 
 from __future__ import annotations
 
-import json
 import re
+import warnings
 from functools import lru_cache
-from typing import Any, Dict, List
+from typing import Any, Dict
 
-from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables import RunnableLambda, RunnablePassthrough
+from langchain_core.runnables.history import RunnableWithMessageHistory
 from langchain_huggingface import ChatHuggingFace, HuggingFaceEndpoint
 
 import config
+import memory
 from image_tool import image_tool
+
+# LangChain nudges you toward LangGraph checkpointers, which would mean an extra
+# dependency and a graph runtime for what is a two-branch chain. RunnableWithMessageHistory
+# is still the supported chat-history API in langchain-core, so we keep it - and
+# silence the notice, which would otherwise print on every single turn.
+warnings.filterwarnings(
+    "ignore",
+    message=".*RunnableWithMessageHistory.*",
+    category=Warning,
+)
 
 # --------------------------------------------------------------------------- #
 # LLM
@@ -219,55 +235,70 @@ def chat(payload: Dict[str, Any]) -> str:
 # --------------------------------------------------------------------------- #
 
 
-def to_messages(history: List[Dict[str, str]], limit: int = 8):
-    """Convert the UI's history dicts into LangChain messages."""
-    messages = []
-    for turn in history[-limit:]:
-        if turn["role"] == "user":
-            messages.append(HumanMessage(content=turn["content"]))
-        else:
-            messages.append(AIMessage(content=turn["content"]))
-    return messages
-
-
 def build_pipeline(force_image: bool = False, **image_options):
-    """LCEL pipeline: route -> (enhance -> generate) | chat.
+    """LCEL pipeline: route -> (enhance -> generate) | chat, with memory.
 
     With force_image=True the router is skipped entirely and every message is
     drawn - the "whatever I type, make a picture of it" mode.
+
+    The result is wrapped in `RunnableWithMessageHistory`, so the caller only
+    supplies `{"input": ...}` plus a session id; the `history` slot every prompt
+    template declares is filled in by LangChain from that session's memory.
     """
 
     def _dispatch(data: Dict[str, Any]) -> Dict[str, Any]:
         payload = {"input": data["input"], "history": data["history"]}
 
         if data["intent"] != "image":
-            return {"type": "text", "text": chat(payload)}
+            reply = chat(payload)
+            return {"type": "text", "text": reply, "memory": reply}
 
         prompt = enhance(payload)
         path = image_tool.invoke({"prompt": prompt, **image_options})
-        return {"type": "image", "prompt": prompt, "path": path}
+        return {
+            "type": "image",
+            "prompt": prompt,
+            "path": path,
+            # What the assistant "said" this turn, as far as memory is concerned.
+            # Storing the prompt rather than the file path is what makes refinements
+            # like "same but at night" resolve against the right picture.
+            "memory": f"Generated an image of: {prompt}",
+        }
 
     router = (
         RunnableLambda(lambda _: "image") if force_image else RunnableLambda(route)
     )
-    return RunnablePassthrough.assign(intent=router) | RunnableLambda(_dispatch)
+    pipeline = RunnablePassthrough.assign(intent=router) | RunnableLambda(_dispatch)
+
+    return RunnableWithMessageHistory(
+        pipeline,
+        memory.get_session_history,
+        input_messages_key="input",
+        history_messages_key="history",
+        output_messages_key="memory",
+    )
 
 
 def respond(
     user_input: str,
-    history: List[Dict[str, str]] | None = None,
+    session_id: str = "default",
     force_image: bool = False,
     **image_options,
 ) -> Dict[str, Any]:
-    """One turn of the chatbot."""
+    """One turn of the chatbot, remembered under `session_id`.
+
+    Nothing is written to memory if the turn raises - a failed generation does
+    not pollute the history.
+    """
     return build_pipeline(force_image=force_image, **image_options).invoke(
-        {"input": user_input, "history": to_messages(history or [])}
+        {"input": user_input},
+        config={"configurable": {"session_id": session_id}},
     )
 
 
 if __name__ == "__main__":  # quick terminal chat: python chain.py
-    turns: List[Dict[str, str]] = []
-    print(f"ImageBot ({config.IMAGE_MODEL}) - type 'exit' to quit.\n")
+    SESSION = "terminal"
+    print(f"ImageBot ({config.IMAGE_MODEL}) - type 'exit' to quit, 'forget' to clear memory.\n")
     while True:
         try:
             user = input("You: ").strip()
@@ -275,8 +306,11 @@ if __name__ == "__main__":  # quick terminal chat: python chain.py
             break
         if not user or user.lower() in {"exit", "quit"}:
             break
+        if user.lower() == "forget":
+            print(f"Bot: forgot {memory.clear_session(SESSION)} messages.\n")
+            continue
         try:
-            result = respond(user, turns)
+            result = respond(user, session_id=SESSION)
         except Exception as exc:
             print(f"Bot: error - {exc}\n")
             continue
@@ -284,8 +318,5 @@ if __name__ == "__main__":  # quick terminal chat: python chain.py
             reply = f"Saved {result['path']}\n     prompt: {result['prompt']}"
         else:
             reply = result["text"]
-        print(f"Bot: {reply}\n")
-        turns += [
-            {"role": "user", "content": user},
-            {"role": "assistant", "content": json.dumps(result)[:400]},
-        ]
+        remembered = len(memory.session_messages(SESSION))
+        print(f"Bot: {reply}\n     [memory: {remembered} messages]\n")

@@ -15,8 +15,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 import config
-from chain import chat as chat_chain
-from chain import enhance, respond, to_messages
+import memory
+from chain import enhance, respond
 from image_tool import image_tool
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -41,6 +41,11 @@ class Turn(BaseModel):
 
 class ChatRequest(BaseModel):
     message: str
+    # Which conversation this turn belongs to. The server keeps the memory; the
+    # browser only has to remember the id.
+    session_id: str = "default"
+    # Only used to re-seed a session the server no longer has (e.g. after a
+    # restart) - see memory.prime_session.
     history: List[Turn] = Field(default_factory=list)
     model: Optional[str] = None
     width: int = 1024
@@ -67,6 +72,8 @@ def get_config() -> Dict[str, Any]:
         "models": models,
         # Models that can run with no token at all, via a public Space.
         "token_free_models": [m for m in models if m in config.SPACE_MAP],
+        # How many messages LangChain keeps per session.
+        "memory_window": memory.MAX_MESSAGES,
         "defaults": {
             model: {
                 "steps": config.default_steps(model),
@@ -92,18 +99,38 @@ def post_chat(req: ChatRequest) -> Dict[str, Any]:
         "guidance_scale": req.guidance_scale,
         "seed": req.seed,
     }
-    history = [turn.model_dump() for turn in req.history]
+    # A restarted server has no memory of this session; the browser's copy of the
+    # transcript refills it so follow-ups keep working across restarts.
+    memory.prime_session(req.session_id, [turn.model_dump() for turn in req.history])
 
     try:
         if req.enhance:
-            result = respond(req.message, history, force_image=req.force_image, **options)
+            result = respond(
+                req.message,
+                session_id=req.session_id,
+                force_image=req.force_image,
+                **options,
+            )
         else:
             # Bypass the LLM: the raw message goes straight to the diffusion model.
+            # Still recorded, so the next enhanced turn can refer back to it.
             path = image_tool.invoke({"prompt": req.message, **options})
             result = {"type": "image", "prompt": req.message, "path": path}
+            memory.get_session_history(req.session_id).add_messages(
+                memory.to_messages(
+                    [
+                        {"role": "user", "content": req.message},
+                        {
+                            "role": "assistant",
+                            "content": f"Generated an image of: {req.message}",
+                        },
+                    ]
+                )
+            )
     except Exception as exc:  # surfaced in the UI as an error bubble
         raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}") from exc
 
+    remembered = len(memory.session_messages(req.session_id))
     if result["type"] == "image":
         name = Path(result["path"]).name
         return {
@@ -112,18 +139,50 @@ def post_chat(req: ChatRequest) -> Dict[str, Any]:
             "url": f"/images/{name}",
             "filename": name,
             "model": model_id,
+            "remembered": remembered,
         }
-    return {"type": "text", "text": result["text"]}
+    return {"type": "text", "text": result["text"], "remembered": remembered}
 
 
 @app.post("/api/enhance")
 def post_enhance(req: ChatRequest) -> Dict[str, str]:
-    """Preview what the LangChain prompt-enhancer would send to the diffusion model."""
+    """Preview what the LangChain prompt-enhancer would send to the diffusion model.
+
+    Reads the session's memory but does not add to it - previewing a prompt is
+    not a turn of the conversation.
+    """
     payload = {
         "input": req.message,
-        "history": to_messages([turn.model_dump() for turn in req.history]),
+        "history": memory.session_messages(req.session_id),
     }
     return {"prompt": enhance(payload)}
+
+
+# --------------------------------------------------------------------------- #
+# Memory
+# --------------------------------------------------------------------------- #
+class SessionRequest(BaseModel):
+    session_id: str = "default"
+
+
+@app.get("/api/session/{session_id}")
+def get_session(session_id: str) -> Dict[str, Any]:
+    """What the bot currently remembers about a conversation."""
+    return {
+        "session_id": session_id,
+        "messages": [
+            {"role": "user" if m.type == "human" else "assistant", "content": m.content}
+            for m in memory.session_messages(session_id)
+        ],
+        "window": memory.MAX_MESSAGES,
+        "totals": memory.stats(),
+    }
+
+
+@app.post("/api/session/reset")
+def reset_session(req: SessionRequest) -> Dict[str, Any]:
+    """Forget a conversation."""
+    return {"session_id": req.session_id, "cleared": memory.clear_session(req.session_id)}
 
 
 @app.get("/api/gallery")

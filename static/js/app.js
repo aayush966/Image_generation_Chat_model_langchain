@@ -24,17 +24,38 @@ const el = {
   lightbox: $("lightbox"),
   lightboxImg: $("lightboxImg"),
   sidebar: $("sidebar"),
+  memoryText: $("memoryText"),
 };
 
-/** Conversation history sent to LangChain so follow-ups keep context. */
+/**
+ * The conversation itself is remembered server-side by LangChain, keyed by this
+ * id. The browser keeps a transcript copy too, but only to redraw the chat after
+ * a reload and to re-seed the server if it has been restarted.
+ */
+const sessionId = (() => {
+  let id = localStorage.getItem("imagebot.session");
+  if (!id) {
+    id = (crypto.randomUUID?.() || String(Date.now() + Math.random())).replace(/-/g, "");
+    localStorage.setItem("imagebot.session", id);
+  }
+  return id;
+})();
+
 let history = JSON.parse(localStorage.getItem("imagebot.history") || "[]");
 let modelDefaults = {};
+let memoryWindow = 16;
 let busy = false;
 
 /* ────────────────────────────── helpers ────────────────────────────── */
 
 const saveHistory = () =>
   localStorage.setItem("imagebot.history", JSON.stringify(history.slice(-20)));
+
+/** Show how much of the conversation LangChain is currently holding. */
+function setMemoryCount(count) {
+  if (count === undefined || count === null) return;
+  el.memoryText.textContent = `🧠 memory: ${count}/${memoryWindow} messages`;
+}
 
 const scrollDown = () => {
   el.messages.scrollTop = el.messages.scrollHeight;
@@ -131,6 +152,7 @@ async function loadConfig() {
   try {
     const cfg = await (await fetch("/api/config")).json();
     modelDefaults = cfg.defaults || {};
+    memoryWindow = cfg.memory_window || memoryWindow;
 
     el.model.innerHTML = "";
     const tokenFree = new Set(cfg.token_free_models || []);
@@ -198,6 +220,8 @@ async function send(message, overrides = {}) {
 
   const payload = {
     message,
+    session_id: sessionId,
+    // Only used if the server has forgotten this session (e.g. it restarted).
     history,
     model: el.model.value,
     width,
@@ -218,6 +242,8 @@ async function send(message, overrides = {}) {
     });
     const data = await res.json();
     pending.remove();
+
+    setMemoryCount(data.remembered);
 
     if (!res.ok) {
       bubble("bot", textNode(`⚠ ${data.detail || res.statusText}`), { error: true });
@@ -289,7 +315,17 @@ document.querySelectorAll(".chip").forEach((chip) =>
   chip.addEventListener("click", () => send(chip.textContent))
 );
 
-$("clearChat").addEventListener("click", () => {
+$("clearChat").addEventListener("click", async () => {
+  // Clear both copies: the server's LangChain memory and the local transcript.
+  try {
+    await fetch("/api/session/reset", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_id: sessionId }),
+    });
+  } catch {
+    /* the reload still clears what the user can see */
+  }
   history = [];
   saveHistory();
   location.reload();
@@ -315,6 +351,23 @@ document.addEventListener("keydown", (e) => {
 document.documentElement.dataset.theme =
   localStorage.getItem("imagebot.theme") || "dark";
 
-loadConfig();
+/** Redraw the transcript kept in localStorage, so a reload is not a blank page. */
+function restoreTranscript() {
+  history.forEach((turn) =>
+    bubble(turn.role === "user" ? "user" : "bot", textNode(turn.content))
+  );
+}
+
+async function loadMemory() {
+  try {
+    const data = await (await fetch(`/api/session/${sessionId}`)).json();
+    setMemoryCount(data.messages.length);
+  } catch {
+    /* the count is cosmetic */
+  }
+}
+
+restoreTranscript();
+loadConfig().then(loadMemory);
 loadGallery();
 el.input.focus();

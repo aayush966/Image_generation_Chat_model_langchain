@@ -5,15 +5,22 @@ Run with:  streamlit run app.py
 
 from __future__ import annotations
 
+import uuid
 from pathlib import Path
 
 import streamlit as st
 
 import config
+import memory
 from chain import respond
 from image_tool import image_tool
 
 st.set_page_config(page_title="ImageBot", page_icon="🎨", layout="centered")
+
+# One LangChain memory session per browser tab. Streamlit reruns the whole
+# script on every interaction, so the id has to live in session_state.
+if "session_id" not in st.session_state:
+    st.session_state.session_id = uuid.uuid4().hex
 
 # --------------------------------------------------------------------------- #
 # Sidebar
@@ -48,9 +55,12 @@ with st.sidebar:
     st.divider()
     st.caption(f"Backend: `{config.BACKEND}`  ·  Text model: `{config.TEXT_MODEL}`")
     st.caption("Token loaded ✅" if config.HF_TOKEN else "⚠️ No HF token in .env")
+    remembered = len(memory.session_messages(st.session_state.session_id))
+    st.caption(f"🧠 Memory: {remembered}/{memory.MAX_MESSAGES} messages")
 
     if st.button("🗑️ Clear chat", use_container_width=True):
         st.session_state.messages = []
+        memory.clear_session(st.session_state.session_id)
         st.rerun()
 
 # --------------------------------------------------------------------------- #
@@ -85,10 +95,6 @@ if user_input := st.chat_input("e.g. a red fox sleeping in a snowy forest at daw
     with st.chat_message("user"):
         st.markdown(user_input)
 
-    history = [
-        {"role": m["role"], "content": m["content"]} for m in st.session_state.messages[:-1]
-    ]
-
     seed = int(seed_text) if seed_text.strip().lstrip("-").isdigit() else None
     options = {
         "width": width,
@@ -102,11 +108,25 @@ if user_input := st.chat_input("e.g. a red fox sleeping in a snowy forest at daw
         with st.spinner("Thinking…"):
             try:
                 if enhance_prompt:
-                    result = respond(user_input, history, **options)
+                    # History comes from LangChain's memory, keyed by session id.
+                    result = respond(
+                        user_input, session_id=st.session_state.session_id, **options
+                    )
                 else:
                     # Skip the LLM entirely: send the raw text straight to the model.
                     path = image_tool.invoke({"prompt": user_input, **options})
                     result = {"type": "image", "prompt": user_input, "path": path}
+                    memory.get_session_history(st.session_state.session_id).add_messages(
+                        memory.to_messages(
+                            [
+                                {"role": "user", "content": user_input},
+                                {
+                                    "role": "assistant",
+                                    "content": f"Generated an image of: {user_input}",
+                                },
+                            ]
+                        )
+                    )
             except Exception as exc:
                 result = {"type": "text", "text": f"❌ {type(exc).__name__}: {exc}"}
 
