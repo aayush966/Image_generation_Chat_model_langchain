@@ -75,11 +75,14 @@ In the terminal chat (`python chain.py`) type `forget` to clear the session.
 
 ### Web UI features
 
-Dark/light theme, model picker, size / steps / guidance / seed controls, prompt-enhance
-toggle, streaming-style typing indicator, image cards with **Download / Copy prompt /
-Variation**, click-to-zoom lightbox, a gallery of past generations, a live memory
-counter, a transcript restored on reload, and a responsive layout with a collapsible
-sidebar on mobile.
+A three-pane studio layout: a sidebar with navigation, the generation settings
+(model, resolution, steps, guidance, seed, always-draw) and one-click style presets;
+a centre stage that shows the latest picture with **Preview / Vary / Copy prompt /
+Download** and the settings it was drawn with; and a right rail listing recent
+generations (this session or all) plus a live LangChain memory meter. Dark/light
+theme, aspect-ratio and prompt-enhance toggles in the composer, click-to-zoom
+lightbox, a full gallery view, the last picture restored on reload, and a responsive
+layout with a slide-in sidebar on mobile.
 
 ### API
 
