@@ -3,3 +3,7 @@ generated/
 __pycache__/
 *.pyc
 .venv/
+
+# Google Cloud service-account keys
+key.json
+gcp-key.json

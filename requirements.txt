@@ -1,12 +1,14 @@
 fastapi>=0.115.0
 uvicorn[standard]>=0.30.0
+python-multipart>=0.0.9    # photo uploads (3D Studio)
 streamlit>=1.39
 langchain>=0.3.7
 langchain-core>=0.3.15
 langchain-huggingface>=0.1.2
-huggingface_hub>=0.26.0
+huggingface_hub>=0.30.0
 gradio_client>=1.4.0
 python-dotenv>=1.0.1
+google-genai>=1.40.0    # Google Vertex AI: Nano Banana images, Veo video
 Pillow>=10.4.0
 
 # Optional: only needed for BACKEND=local (runs the diffusion model on your machine)
@@ -14,3 +16,4 @@ Pillow>=10.4.0
 # torch>=2.4.0
 # transformers>=4.45.0
 # accelerate>=1.0.0
+# imageio[ffmpeg]>=2.35.0   # writing MP4s from a local video pipeline

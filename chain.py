@@ -2,8 +2,12 @@
 
 Flow for every user turn:
 
-    user text ──> router chain ──┬── "image" ──> prompt-enhancer chain ──> HuggingFaceImageTool
+    user text ──> router chain ──┬── "image" ──> prompt-enhancer chain ──┬─ mode "image" ─> HuggingFaceImageTool
+                                 │                                      └─ mode "video" ─> HuggingFaceVideoTool
                                  └── "chat"  ──> conversational chain
+
+The mode (image or video) is a switch the caller flips; the router only decides
+whether the user wants *something generated* or is just talking.
 
 All three chains run on an open-source instruct model served by the Hugging Face
 Inference API through `langchain_huggingface`.
@@ -30,6 +34,23 @@ from langchain_huggingface import ChatHuggingFace, HuggingFaceEndpoint
 import config
 import memory
 from image_tool import image_tool
+from video_tool import video_tool
+
+# The two generation modes. Everything mode-specific is looked up here.
+MODES = {
+    "image": {
+        "tool": image_tool,
+        "noun": "image",
+        "verb": "Generated an image of",
+        "model": config.IMAGE_MODEL,
+    },
+    "video": {
+        "tool": video_tool,
+        "noun": "video clip",
+        "verb": "Generated a video of",
+        "model": config.VIDEO_MODEL,
+    },
+}
 
 # LangChain nudges you toward LangGraph checkpointers, which would mean an extra
 # dependency and a graph runtime for what is a two-branch chain. RunnableWithMessageHistory
@@ -72,11 +93,11 @@ ROUTER_PROMPT = ChatPromptTemplate.from_messages(
     [
         (
             "system",
-            "You classify the user's latest message in an image-generation chatbot.\n"
+            "You classify the user's latest message in an image- and video-generation chatbot.\n"
             'Reply with JSON only: {{"intent": "image"}} or {{"intent": "chat"}}.\n'
-            '- "image": the user wants a picture created, or wants the previous picture '
-            "changed/redone (e.g. \"make it night time\", \"same but a cat\"). A bare "
-            "description of a subject or scene with no question in it is ALWAYS an image "
+            '- "image": the user wants a picture or video clip created, or wants the previous '
+            "one changed/redone (e.g. \"make it night time\", \"same but a cat\"). A bare "
+            "description of a subject or scene with no question in it is ALWAYS a generation "
             'request - "watercolour lighthouse during a storm" is "image", not "chat".\n'
             '- "chat": only greetings, thanks, and questions aimed at the assistant '
             '("who are you?", "which model do you use?", "how does this work?").\n'
@@ -90,7 +111,8 @@ ROUTER_PROMPT = ChatPromptTemplate.from_messages(
 
 IMAGE_HINT = re.compile(
     r"\b(draw|paint|generate|create|make|render|design|illustrate|sketch|show me|picture|"
-    r"image|photo|art|logo|poster|wallpaper|portrait|scene)\b",
+    r"image|photo|art|logo|poster|wallpaper|portrait|scene|video|clip|animate|animation|"
+    r"film|footage|timelapse|time-lapse)\b",
     re.I,
 )
 
@@ -164,20 +186,42 @@ ENHANCER_PROMPT = ChatPromptTemplate.from_messages(
 )
 
 
+VIDEO_ENHANCER_PROMPT = ChatPromptTemplate.from_messages(
+    [
+        (
+            "system",
+            "You write prompts for a text-to-video diffusion model.\n"
+            "Expand the user's request into ONE vivid English prompt of 40-70 words that "
+            "describes a short clip: the subject and what it is DOING, how things move, "
+            "the camera (static, slow pan, dolly in, handheld...), setting, lighting, "
+            "colour palette and visual style. Keep it to a single continuous shot.\n"
+            "If the user is refining a previous clip, carry over everything from that clip "
+            "except what they asked to change.\n"
+            "Output the prompt text only - no quotes, no labels, no explanation.",
+        ),
+        MessagesPlaceholder("history"),
+        ("human", "{input}"),
+    ]
+)
+
+ENHANCER_PROMPTS = {"image": ENHANCER_PROMPT, "video": VIDEO_ENHANCER_PROMPT}
+
+
 def _clean_prompt(text: str) -> str:
     text = text.strip().strip('"').strip()
     text = re.sub(r"^(prompt|final prompt|image prompt)\s*[:\-]\s*", "", text, flags=re.I)
     return " ".join(text.split())
 
 
-def build_enhancer():
-    return ENHANCER_PROMPT | get_llm() | StrOutputParser() | RunnableLambda(_clean_prompt)
+def build_enhancer(mode: str = "image"):
+    prompt = ENHANCER_PROMPTS.get(mode, ENHANCER_PROMPT)
+    return prompt | get_llm() | StrOutputParser() | RunnableLambda(_clean_prompt)
 
 
-def enhance(payload: Dict[str, Any]) -> str:
+def enhance(payload: Dict[str, Any], mode: str = "image") -> str:
     """Enhanced prompt, or the raw user text if the LLM is unavailable."""
     try:
-        enhanced = build_enhancer().invoke(payload)
+        enhanced = build_enhancer(mode).invoke(payload)
         return enhanced if len(enhanced) > 10 else payload["input"]
     except Exception:
         return payload["input"]
@@ -191,10 +235,11 @@ CHAT_PROMPT = ChatPromptTemplate.from_messages(
     [
         (
             "system",
-            "You are ImageBot, a friendly assistant that generates images from "
-            f"descriptions using the open-source model {config.IMAGE_MODEL}. "
-            "Keep replies to two or three sentences and nudge the user toward "
-            "describing a picture you could create for them.",
+            "You are ImageBot, a friendly assistant that generates images and short "
+            f"video clips from descriptions, using the open-source models {config.IMAGE_MODEL} "
+            f"(images) and {config.VIDEO_MODEL} (video). The user picks the mode with the "
+            "Image / Video switch in the app. Keep replies to two or three sentences and "
+            "nudge the user toward describing a picture or clip you could create for them.",
         ),
         MessagesPlaceholder("history"),
         ("human", "{input}"),
@@ -235,16 +280,24 @@ def chat(payload: Dict[str, Any]) -> str:
 # --------------------------------------------------------------------------- #
 
 
-def build_pipeline(force_image: bool = False, **image_options):
+def build_pipeline(force_image: bool = False, mode: str = "image", **generation_options):
     """LCEL pipeline: route -> (enhance -> generate) | chat, with memory.
 
     With force_image=True the router is skipped entirely and every message is
     drawn - the "whatever I type, make a picture of it" mode.
 
+    `mode` picks the generator: "image" (HuggingFaceImageTool) or "video"
+    (HuggingFaceVideoTool). The remaining keyword arguments are passed straight
+    to that tool.
+
     The result is wrapped in `RunnableWithMessageHistory`, so the caller only
     supplies `{"input": ...}` plus a session id; the `history` slot every prompt
     template declares is filled in by LangChain from that session's memory.
     """
+
+    if mode not in MODES:
+        raise ValueError(f"unknown mode {mode!r}; expected one of {sorted(MODES)}")
+    spec = MODES[mode]
 
     def _dispatch(data: Dict[str, Any]) -> Dict[str, Any]:
         payload = {"input": data["input"], "history": data["history"]}
@@ -253,16 +306,16 @@ def build_pipeline(force_image: bool = False, **image_options):
             reply = chat(payload)
             return {"type": "text", "text": reply, "memory": reply}
 
-        prompt = enhance(payload)
-        path = image_tool.invoke({"prompt": prompt, **image_options})
+        prompt = enhance(payload, mode)
+        path = spec["tool"].invoke({"prompt": prompt, **generation_options})
         return {
-            "type": "image",
+            "type": mode,
             "prompt": prompt,
             "path": path,
             # What the assistant "said" this turn, as far as memory is concerned.
             # Storing the prompt rather than the file path is what makes refinements
-            # like "same but at night" resolve against the right picture.
-            "memory": f"Generated an image of: {prompt}",
+            # like "same but at night" resolve against the right picture or clip.
+            "memory": memory_line(mode, prompt),
         }
 
     router = (
@@ -279,18 +332,24 @@ def build_pipeline(force_image: bool = False, **image_options):
     )
 
 
+def memory_line(mode: str, prompt: str) -> str:
+    """The assistant message remembered for a generation turn."""
+    return f"{MODES[mode]['verb']}: {prompt}"
+
+
 def respond(
     user_input: str,
     session_id: str = "default",
     force_image: bool = False,
-    **image_options,
+    mode: str = "image",
+    **generation_options,
 ) -> Dict[str, Any]:
     """One turn of the chatbot, remembered under `session_id`.
 
-    Nothing is written to memory if the turn raises - a failed generation does
-    not pollute the history.
+    `mode` is "image" or "video". Nothing is written to memory if the turn
+    raises - a failed generation does not pollute the history.
     """
-    return build_pipeline(force_image=force_image, **image_options).invoke(
+    return build_pipeline(force_image=force_image, mode=mode, **generation_options).invoke(
         {"input": user_input},
         config={"configurable": {"session_id": session_id}},
     )
@@ -298,7 +357,11 @@ def respond(
 
 if __name__ == "__main__":  # quick terminal chat: python chain.py
     SESSION = "terminal"
-    print(f"ImageBot ({config.IMAGE_MODEL}) - type 'exit' to quit, 'forget' to clear memory.\n")
+    mode = "image"
+    print(
+        f"ImageBot - images: {config.IMAGE_MODEL} | video: {config.VIDEO_MODEL}\n"
+        "Type 'video' or 'image' to switch mode, 'forget' to clear memory, 'exit' to quit.\n"
+    )
     while True:
         try:
             user = input("You: ").strip()
@@ -309,12 +372,16 @@ if __name__ == "__main__":  # quick terminal chat: python chain.py
         if user.lower() == "forget":
             print(f"Bot: forgot {memory.clear_session(SESSION)} messages.\n")
             continue
+        if user.lower() in MODES:
+            mode = user.lower()
+            print(f"Bot: switched to {mode} mode ({MODES[mode]['model']}).\n")
+            continue
         try:
-            result = respond(user, session_id=SESSION)
+            result = respond(user, session_id=SESSION, mode=mode)
         except Exception as exc:
             print(f"Bot: error - {exc}\n")
             continue
-        if result["type"] == "image":
+        if result["type"] in MODES:
             reply = f"Saved {result['path']}\n     prompt: {result['prompt']}"
         else:
             reply = result["text"]

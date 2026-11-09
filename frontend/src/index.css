@@ -1,0 +1,188 @@
+@import "tailwindcss";
+@import "@fontsource-variable/inter";
+
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+/* Semantic tokens. Components only use these (bg-panel, text-muted, …), so the
+ * light/dark switch is a matter of swapping values. A restrained neutral
+ * palette with a single accent, used sparingly for focus and active state. */
+:root {
+  --bg: #f7f7f8;
+  --panel: #ffffff;
+  --subtle: #f4f4f5;
+  --raised: #ececee;
+  --line: #e4e4e7;
+  --line-strong: #d4d4d8;
+  --fg: #18181b;
+  --muted: #52525b;
+  --faint: #8a8a93;
+  --accent: #4f46e5;
+  --accent-soft: color-mix(in oklab, var(--accent) 10%, transparent);
+  --accent-fg: #ffffff;
+  --success: #16a34a;
+  --warning: #d97706;
+  --danger: #dc2626;
+  --shadow-lg: 0 16px 40px -16px rgb(16 24 40 / 0.18);
+  --checker: #efeff1;
+  color-scheme: light;
+}
+
+[data-theme="dark"] {
+  --bg: #09090b;
+  --panel: #0f0f11;
+  --subtle: #151518;
+  --raised: #1c1c20;
+  --line: #232328;
+  --line-strong: #303036;
+  --fg: #ededef;
+  --muted: #a1a1aa;
+  --faint: #6b6b74;
+  --accent: #818cf8;
+  --accent-fg: #0b0b0f;
+  --success: #22c55e;
+  --warning: #f59e0b;
+  --danger: #f05252;
+  --shadow-lg: 0 16px 40px -16px rgb(0 0 0 / 0.7);
+  --checker: #121215;
+  color-scheme: dark;
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-panel: var(--panel);
+  --color-subtle: var(--subtle);
+  --color-raised: var(--raised);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-fg: var(--fg);
+  --color-muted: var(--muted);
+  --color-faint: var(--faint);
+  --color-accent: var(--accent);
+  --color-accent-soft: var(--accent-soft);
+  --color-accent-fg: var(--accent-fg);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-danger: var(--danger);
+  --shadow-float: var(--shadow-lg);
+  --font-sans: "Inter Variable", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", "Cascadia Code", ui-monospace, Consolas, monospace;
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    background: var(--bg);
+    color: var(--fg);
+    font-family: var(--font-sans);
+    font-size: 13.5px;
+    line-height: 1.5;
+    font-feature-settings: "cv11", "ss01";
+    -webkit-font-smoothing: antialiased;
+  }
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+  ::selection {
+    background: color-mix(in oklab, var(--accent) 25%, transparent);
+  }
+}
+
+@layer components {
+  /* Thin, theme-aware scrollbars for the panes. */
+  .scroll-thin {
+    scrollbar-width: thin;
+    scrollbar-color: var(--line-strong) transparent;
+  }
+
+  /* The canvas behind a result: a faint checkerboard, like an image editor. */
+  .canvas-grid {
+    background-color: var(--subtle);
+    background-image:
+      linear-gradient(45deg, var(--checker) 25%, transparent 25%),
+      linear-gradient(-45deg, var(--checker) 25%, transparent 25%),
+      linear-gradient(45deg, transparent 75%, var(--checker) 75%),
+      linear-gradient(-45deg, transparent 75%, var(--checker) 75%);
+    background-size: 20px 20px;
+    background-position: 0 0, 0 10px, 10px -10px, -10px 0;
+  }
+
+  /* Range input styled once, used by every slider. */
+  .range {
+    appearance: none;
+    width: 100%;
+    height: 4px;
+    border-radius: 999px;
+    background: linear-gradient(to right, var(--fg) var(--fill, 0%), var(--line-strong) var(--fill, 0%));
+    cursor: pointer;
+  }
+  .range::-webkit-slider-thumb {
+    appearance: none;
+    width: 14px;
+    height: 14px;
+    border-radius: 999px;
+    background: var(--panel);
+    border: 2px solid var(--fg);
+    box-shadow: 0 1px 2px rgb(0 0 0 / 0.2);
+  }
+  .range::-moz-range-thumb {
+    width: 12px;
+    height: 12px;
+    border-radius: 999px;
+    background: var(--panel);
+    border: 2px solid var(--fg);
+  }
+  .range:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+
+  /* Indeterminate shimmer while a model renders. */
+  .shimmer {
+    background: linear-gradient(
+      100deg,
+      transparent 20%,
+      color-mix(in oklab, var(--fg) 6%, transparent) 50%,
+      transparent 80%
+    );
+    background-size: 200% 100%;
+    animation: shimmer 1.6s linear infinite;
+  }
+}
+
+@keyframes shimmer {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@utility animate-fade-up {
+  animation: fade-up 0.2s ease-out both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
